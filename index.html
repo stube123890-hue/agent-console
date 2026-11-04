@@ -108,6 +108,7 @@
   .lowerCard #cliPanel{ margin:14px 0 0; }
   #log{ display:flex; flex-direction:column; gap:12px; padding:8px 2px 12px;
         flex:1 1 auto; min-height:0; overflow-y:auto; }
+  .thread{ display:flex; flex-direction:column; gap:12px; }
   .msg{ max-width:86%; padding:12px 16px; border-radius:20px;
         border:1px solid var(--line-soft); box-shadow:0 1px 2px rgba(0,0,0,.05);
         background:var(--wash); word-wrap:break-word; white-space:pre-wrap;
@@ -500,6 +501,14 @@
   function scrollLog() { log.scrollTop = log.scrollHeight; }
 
   function addUserBubble(id, msg) {
+    /* One container per thread (D30): the reply and files used to
+       be appended to the END of the whole log, so on reload they
+       detached from their question and stacked at the bottom -
+       the "messages sliding down" the owner reported. Everything
+       a thread owns now lives inside its own .thread box, in
+       order, and can never migrate. */
+    var wrap = document.createElement("div");
+    wrap.className = "thread";
     var div = document.createElement("div");
     div.className = "msg me";
     div.title = "Show this message in the CLI panel";
@@ -510,16 +519,17 @@
       '<div class="meta">' + esc(fmtTime(msg.ts)) +
       (msg.web === false ? " · web off" : " · web on") + "</div>";
     div.addEventListener("click", function () { selectCli(id); });
-    log.appendChild(div);
+    wrap.appendChild(div);
     var st = document.createElement("div");
     st.className = "statusLine";
-    log.appendChild(st);
+    wrap.appendChild(st);
     var rb = document.createElement("div");
     rb.className = "reasonBox hidden";
     rb.innerHTML = '<div class="rlabel">Reasoning</div>' +
       '<div class="reasonBody"></div>';
-    log.appendChild(rb);
-    threads[id] = { statusEl: st, replyEl: null, filesEl: null,
+    wrap.appendChild(rb);
+    log.appendChild(wrap);
+    threads[id] = { wrap: wrap, statusEl: st, replyEl: null, filesEl: null,
                     reasonEl: rb,
                     reasonBody: rb.querySelector(".reasonBody"),
                     status: msg.status || "pending", replyDone: false,
@@ -582,7 +592,7 @@
       div.textContent = reply.text ||
         (reply.status === "model-asleep" ? "The model is asleep." : "Something went wrong.");
     }
-    log.appendChild(div);
+    t.wrap.appendChild(div);
     t.replyEl = div;
     scrollLog();
   }
@@ -607,7 +617,7 @@
       row.appendChild(btn);
       box.appendChild(row);
     });
-    log.appendChild(box);
+    t.wrap.appendChild(box);
     t.filesEl = box;
     scrollLog();
   }
