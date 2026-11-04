@@ -39,11 +39,17 @@
   .presence{ display:flex; flex-direction:column; align-items:flex-end; gap:6px; }
   .modelTrigger{ display:flex; align-items:center; gap:8px; font-size:.92rem;
                  font-weight:600; min-height:24px; }
-  /* Status trigger: colour transition animates; pulse is scale/opacity
-     ONLY (owner rule: no glow / box-shadow halo). */
-  .dot{ width:11px; height:11px; border-radius:50%; background:var(--dot-red);
-        transition:background-color .45s ease; flex:none; }
-  .dot.up{ background:var(--dot-blue); }
+  /* Status lamps (owner, 2026-11-04): each indicator is a red+blue
+     PAIR, both lamps always present. The on-duty colour burns full;
+     the off-duty one sits dim (same colour, low opacity) - active:
+     blue bright, red dim; deactivated: red stays bright, blue dim.
+     Pulse is scale/opacity ONLY (owner rule: no glow / halo). */
+  .lamps{ display:inline-flex; gap:5px; align-items:center; flex:none; }
+  .dot{ width:11px; height:11px; border-radius:50%; flex:none;
+        transition:opacity .45s ease; }
+  .dot.red{ background:var(--dot-red); }
+  .dot.blue{ background:var(--dot-blue); }
+  .dot.dim{ opacity:.2; }
   .dot.pulse{ animation:dotpulse .8s ease-in-out 2; }
   @keyframes dotpulse{ 0%{transform:scale(1);opacity:1;}
                        50%{transform:scale(1.5);opacity:.5;}
@@ -90,10 +96,16 @@
      composer) with the CLI panel nested inside it beneath the
      composer; on desktop the card becomes a two-column grid and the
      CLI takes the right-hand column. */
-  #mainCard{ margin-top:0; }
-  .chatCard{ display:flex; flex-direction:column; overflow:hidden;
-             height:clamp(440px, calc(100dvh - 178px), 880px);
-             padding:18px 18px 0; }
+  /* Console layout (owner, 2026-11-04): the chat itself is OPEN on
+     the page - no card around the signed-in bar or the log. Only
+     the lower block (composer + CLI) is containerized, in
+     .lowerCard. #mainCard keeps the old card's height budget as a
+     flex column so the log scrolls and the lower block stays put. */
+  #mainCard{ margin-top:0; display:flex; flex-direction:column;
+             height:clamp(440px, calc(100dvh - 178px), 880px); }
+  .lowerCard{ flex:none; margin-top:14px; padding:18px; }
+  .lowerCard .composer{ border-top:none; padding:0; }
+  .lowerCard #cliPanel{ margin:14px 0 0; }
   #log{ display:flex; flex-direction:column; gap:12px; padding:8px 2px 12px;
         flex:1 1 auto; min-height:0; overflow-y:auto; }
   .msg{ max-width:86%; padding:12px 16px; border-radius:20px;
@@ -216,20 +228,11 @@
   #cliBody .k{ color:#fff; font-weight:700; }
   #cliBody .empty{ color:#737373; }
 
-  /* Desktop: one console card with two columns inside it — the chat
-     column on the left, the CLI as its own panel in the right-hand
-     column, spanning the card's full height. */
+  /* Desktop: same open layout, wider page padding. (The D22
+     two-column console card was retired by the owner's open-chat
+     direction, 2026-11-04.) */
   @media (min-width:1024px){
     .wrap{ padding:28px 28px 64px; }
-    .chatCard{ display:grid; margin-top:20px;
-               grid-template-columns:minmax(0,1fr) minmax(350px,440px);
-               grid-template-rows:auto minmax(0,1fr) auto; column-gap:24px; }
-    .chatCard .bar{ grid-area:1 / 1; }
-    #log{ grid-area:2 / 1; min-width:0; }
-    .composer{ grid-area:3 / 1; }
-    #cliPanel{ grid-area:1 / 2 / span 3; margin:0 0 18px;
-               display:flex; flex-direction:column; }
-    #cliBody{ flex:1 1 auto; min-height:0; max-height:none; }
   }
 
   /* Phones: compact header that never crowds, full-width blocks */
@@ -241,9 +244,9 @@
     .presence{ flex-direction:row; flex-wrap:wrap; align-items:center;
                justify-content:flex-end; gap:6px 12px; }
     .card{ padding:18px 16px; margin-top:16px; }
-    .chatCard{ padding:14px 12px 0; margin-top:16px;
-               height:clamp(400px, calc(100dvh - 196px), 720px); }
-    #cliPanel{ margin:2px 0 14px; }
+    #mainCard{ height:clamp(400px, calc(100dvh - 196px), 720px); }
+    .lowerCard{ padding:14px 12px; margin-top:12px; }
+    .lowerCard #cliPanel{ margin:12px 0 0; }
     #cliPanel .cliHead{ padding:12px 16px; }
     #cliBody{ padding:14px 16px; max-height:200px; }
     .msg{ max-width:94%; }
@@ -263,10 +266,13 @@
     </div>
     <div class="presence">
       <div class="modelTrigger" title="Live model status from the relay">
-        <span class="dot" id="modelDot"></span>
+        <span class="lamps"><span class="dot red" id="modelRed"></span><span class="dot blue dim" id="modelBlue"></span></span>
         <span id="modelLabel">Model asleep</span>
       </div>
-      <span class="relayState" id="relayState">Relay: unknown</span>
+      <div class="modelTrigger" title="Live relay status">
+        <span class="lamps"><span class="dot red" id="relayRed"></span><span class="dot blue dim" id="relayBlue"></span></span>
+        <span class="relayState" id="relayState">Relay: unknown</span>
+      </div>
       <button class="ghost hidden" id="clearChat">Clear chat</button>
       <button class="ghost hidden" id="signout">Sign out</button>
     </div>
@@ -288,12 +294,13 @@
       and replies travel through your Firebase database — nothing is public.</p>
   </div>
 
-  <!-- Console -->
+  <!-- Console: chat open on the page; only the lower block
+       (composer + CLI) sits in a card. -->
   <div class="hidden" id="mainCard">
-    <div class="card chatCard">
       <div class="bar"><span id="signedInAs"></span></div>
       <div id="log" class="noanim" aria-live="polite"></div>
 
+    <div class="card lowerCard">
       <div class="composer">
         <div class="inputBar">
           <textarea id="text" placeholder="Message your agent…" maxlength="8000"></textarea>
@@ -372,19 +379,26 @@
 
   /* ---------- Model status trigger (live from /agentlink/presence) -- */
   var lastModelUp = null;
+  function setLamps(which, on) {
+    /* Two-lamp indicator: on = blue bright + red dim;
+       off = red stays bright + blue dim. */
+    $(which + "Red").classList.toggle("dim", on);
+    $(which + "Blue").classList.toggle("dim", !on);
+  }
   function renderPresence(p) {
     var now = Date.now();
     var fresh = p && p.relay_ts && (now - p.relay_ts < 120000);
     $("relayState").textContent = fresh
       ? "Relay: online · " + fmtTime(p.relay_ts) : "Relay: offline";
+    setLamps("relay", !!fresh);
     var up = !!(fresh && p.model === "up");
-    var dot = $("modelDot");
-    dot.classList.toggle("up", up);
+    setLamps("model", up);
     $("modelLabel").textContent = up ? "Model active" : "Model asleep";
     if (lastModelUp !== null && lastModelUp !== up) {
-      dot.classList.remove("pulse");
-      void dot.offsetWidth;               // restart the animation
-      dot.classList.add("pulse");
+      var lit = $(up ? "modelBlue" : "modelRed");
+      lit.classList.remove("pulse");
+      void lit.offsetWidth;               // restart the animation
+      lit.classList.add("pulse");
     }
     lastModelUp = up;
   }
