@@ -86,9 +86,10 @@
         flex-wrap:wrap; margin-bottom:6px; }
   .bar span{ color:var(--grey); font-size:.88rem; }
 
-  /* Console layout: chat and CLI are two separate containers. Mobile:
-     stacked blocks with real separation. Desktop: two columns, the CLI
-     a sticky panel of its own. */
+  /* Console layout: one card holds the chat (bar, scrolling log,
+     composer) with the CLI panel nested inside it beneath the
+     composer; on desktop the card becomes a two-column grid and the
+     CLI takes the right-hand column. */
   #mainCard{ margin-top:0; }
   .chatCard{ display:flex; flex-direction:column; overflow:hidden;
              height:clamp(440px, calc(100dvh - 178px), 880px);
@@ -129,6 +130,26 @@
   .composer{ border-top:1px solid var(--line); padding:14px 2px;
              padding-bottom:calc(14px + env(safe-area-inset-bottom)); }
   .compRow{ display:flex; align-items:center; gap:10px; margin-top:12px; flex-wrap:wrap; }
+
+  /* Composer input bar — one rounded bar holding the flexible textarea
+     with the round send-arrow pinned inside its right edge (owner
+     revision: no separate Send pill below the input). */
+  .inputBar{ position:relative; display:flex; align-items:flex-end;
+             border:1px solid var(--line2); border-radius:var(--r-md);
+             background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.04);
+             transition:border-color .15s ease, box-shadow .15s ease; }
+  .inputBar:focus-within{ outline:2px solid #000; outline-offset:1px;
+             border-color:transparent; }
+  .inputBar textarea{ flex:1 1 auto; border:0; border-radius:0; box-shadow:none;
+             background:transparent; padding:13px 62px 13px 16px; min-height:52px; }
+  .inputBar textarea:focus{ outline:none; border-color:transparent; }
+  .sendArrow{ position:absolute; right:7px; bottom:7px; width:44px; height:44px;
+             border-radius:50%; border:1px solid #000; background:#000; color:#fff;
+             font-size:1.3rem; line-height:1; padding:0; box-shadow:var(--shadow-btn);
+             display:flex; align-items:center; justify-content:center;
+             transition:opacity .15s ease, transform .12s ease; }
+  .sendArrow:active{ transform:scale(.94); }
+  .sendArrow:disabled{ opacity:.35; cursor:default; box-shadow:none; }
   .chips{ display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
   .chips:empty{ margin-top:0; }
   .chip{ border:1px solid var(--line2); border-radius:999px; padding:5px 6px 5px 14px;
@@ -151,12 +172,15 @@
   .switch input:checked + .track{ background:#000; }
   .switch input:checked + .track:before{ transform:translateX(22px); background:#fff; }
 
-  /* CLI showcase — its own dedicated container, apart from the chat:
-     inverted black card, generously rounded, deep soft shadow, own
-     header ("CLI — agent activity"). */
+  /* CLI showcase — its own dedicated black container, nested inside
+     the chat card beneath the composer (owner revision): inverted
+     black panel, generously rounded, deep soft shadow, own header
+     ("CLI — agent activity"). On desktop it takes the card's
+     right-hand grid column. */
   #cliPanel{ background:#000; color:#fff; border:1px solid #000;
              border-radius:var(--r-lg); box-shadow:var(--shadow-cli);
-             margin-top:24px; overflow:hidden; animation:fadein .3s ease; }
+             margin:4px 0 18px; flex:none;
+             overflow:hidden; animation:fadein .3s ease; }
   #cliPanel .cliHead{ display:flex; justify-content:space-between; align-items:center;
                       gap:10px; padding:14px 20px; border-bottom:1px solid #262626; }
   #cliPanel .cliHead b{ font-size:.92rem; letter-spacing:.05em; }
@@ -174,15 +198,19 @@
   #cliBody .k{ color:#fff; font-weight:700; }
   #cliBody .empty{ color:#737373; }
 
-  /* Desktop: chat and CLI side by side, CLI its own sticky column */
+  /* Desktop: one console card with two columns inside it — the chat
+     column on the left, the CLI as its own panel in the right-hand
+     column, spanning the card's full height. */
   @media (min-width:1024px){
     .wrap{ padding:28px 28px 64px; }
-    #mainCard{ display:grid; grid-template-columns:minmax(0,1fr) minmax(350px,440px);
-               gap:24px; align-items:start; }
-    .chatCard{ margin-top:20px; }
-    #cliPanel{ margin-top:20px; position:sticky; top:20px;
-               display:flex; flex-direction:column;
-               height:clamp(440px, calc(100dvh - 178px), 880px); }
+    .chatCard{ display:grid; margin-top:20px;
+               grid-template-columns:minmax(0,1fr) minmax(350px,440px);
+               grid-template-rows:auto minmax(0,1fr) auto; column-gap:24px; }
+    .chatCard .bar{ grid-area:1 / 1; }
+    #log{ grid-area:2 / 1; min-width:0; }
+    .composer{ grid-area:3 / 1; }
+    #cliPanel{ grid-area:1 / 2 / span 3; margin:0 0 18px;
+               display:flex; flex-direction:column; }
     #cliBody{ flex:1 1 auto; min-height:0; max-height:none; }
   }
 
@@ -197,9 +225,9 @@
     .card{ padding:18px 16px; margin-top:16px; }
     .chatCard{ padding:14px 12px 0; margin-top:16px;
                height:clamp(400px, calc(100dvh - 196px), 720px); }
-    #cliPanel{ margin-top:20px; }
+    #cliPanel{ margin:2px 0 14px; }
     #cliPanel .cliHead{ padding:12px 16px; }
-    #cliBody{ padding:14px 16px; max-height:300px; }
+    #cliBody{ padding:14px 16px; max-height:200px; }
     .msg{ max-width:94%; }
   }
   @media (prefers-reduced-motion: reduce){
@@ -247,7 +275,10 @@
       <div id="log" aria-live="polite"></div>
 
       <div class="composer">
-        <textarea id="text" placeholder="Message your agent…" maxlength="8000"></textarea>
+        <div class="inputBar">
+          <textarea id="text" placeholder="Message your agent…" maxlength="8000"></textarea>
+          <button class="sendArrow" id="sendBtn" type="button" aria-label="Send message" title="Send">&#8593;</button>
+        </div>
         <div class="chips" id="chips"></div>
         <div class="compRow">
           <input type="file" id="fileInput" multiple class="hidden">
@@ -259,21 +290,19 @@
             </span>
             Web
           </label>
-          <span style="flex:1"></span>
-          <button class="primary" id="sendBtn" type="button">Send</button>
         </div>
         <div class="errText" id="sendError"></div>
       </div>
-    </div>
 
-    <!-- CLI code showcase -->
-    <section id="cliPanel">
+      <!-- CLI code showcase — its own black panel, inside the card -->
+      <section id="cliPanel">
       <div class="cliHead">
         <div><b>CLI</b> <span class="cliDash" aria-hidden="true">&mdash;</span> <span id="cliForLabel">agent activity</span></div>
         <button id="cliToggle" type="button">Hide</button>
       </div>
       <div id="cliBody"><div class="line empty">No activity yet — send a message and the agent's commands, tool calls and output will stream here.</div></div>
-    </section>
+      </section>
+    </div>
   </div>
 </div>
 
