@@ -116,6 +116,20 @@
   .typing i:nth-child(2){ animation-delay:.18s; } .typing i:nth-child(3){ animation-delay:.36s; }
   @keyframes tblink{ 0%,60%,100%{opacity:.18;} 30%{opacity:1;} }
 
+  /* Reasoning — live sub-panel under the working message (D26):
+     muted monochrome wash, dark grey text, the same radius
+     language as the bubbles. Shown only while its run streams
+     reasoning; hidden the moment the reply lands. */
+  .reasonBox{ max-width:86%; align-self:flex-start; background:var(--wash2);
+              border:1px solid var(--line-soft); border-radius:var(--r-md);
+              padding:10px 14px 12px; box-shadow:0 1px 2px rgba(0,0,0,.04);
+              animation:fadein .25s ease; }
+  .reasonBox .rlabel{ font-size:.7rem; font-weight:700; letter-spacing:.08em;
+              text-transform:uppercase; color:var(--grey); margin-bottom:6px; }
+  .reasonBody{ font-size:.88rem; line-height:1.55; color:var(--grey2);
+               white-space:pre-wrap; word-break:break-word;
+               max-height:200px; overflow-y:auto; }
+
   /* Files */
   .fileList{ display:flex; flex-direction:column; gap:8px; margin-top:8px; }
   .fileRow{ display:flex; justify-content:space-between; align-items:center; gap:8px;
@@ -229,6 +243,7 @@
     #cliPanel .cliHead{ padding:12px 16px; }
     #cliBody{ padding:14px 16px; max-height:200px; }
     .msg{ max-width:94%; }
+    .reasonBox{ max-width:94%; }
   }
   @media (prefers-reduced-motion: reduce){
     *{ animation:none !important; transition:none !important; }
@@ -248,6 +263,7 @@
         <span id="modelLabel">Model asleep</span>
       </div>
       <span class="relayState" id="relayState">Relay: unknown</span>
+      <button class="ghost hidden" id="clearChat">Clear chat</button>
       <button class="ghost hidden" id="signout">Sign out</button>
     </div>
   </header>
@@ -391,16 +407,69 @@
   $("password").addEventListener("keydown", function (e) { if (e.key === "Enter") $("signin").click(); });
   $("signout").addEventListener("click", function () { auth.signOut(); });
 
+  /* ---------- Clear chat (D26) ----------
+     Deletes the chat-scoped roots under /agentlink — inbox,
+     replies, files, activity, reasoning — and nothing else:
+     /agentlink/presence and /agentlink/llm are infrastructure,
+     and the Muse Chat /messages room is a different product.
+     Two-step inline confirm: the first tap arms the button for
+     a few seconds; the second tap executes. */
+  var CHAT_ROOTS = ["inbox", "replies", "files", "activity", "reasoning"];
+  var clearArmTimer = null;
+  function disarmClear() {
+    var btn = $("clearChat");
+    btn.dataset.armed = "";
+    btn.textContent = "Clear chat";
+    if (clearArmTimer) { clearTimeout(clearArmTimer); clearArmTimer = null; }
+  }
+  $("clearChat").addEventListener("click", function () {
+    var btn = $("clearChat");
+    if (btn.dataset.armed !== "1") {
+      btn.dataset.armed = "1";
+      btn.textContent = "Tap again to clear all";
+      clearArmTimer = setTimeout(disarmClear, 4000);
+      return;
+    }
+    disarmClear();
+    btn.disabled = true;
+    var jobs = CHAT_ROOTS.map(function (r) {
+      return db.ref("agentlink/" + r).remove();
+    });
+    Promise.all(jobs).then(function () {
+      resetChatUi();
+    }).catch(function (err) {
+      $("sendError").textContent = "Clear chat failed: " + err.message;
+    }).finally(function () { btn.disabled = false; });
+  });
+  function resetChatUi() {
+    Object.keys(threads).forEach(function (id) {
+      (threads[id].refs || []).forEach(function (r) { r.off(); });
+    });
+    threads = {};
+    if (cliRef) { cliRef.off(); cliRef = null; }
+    cliFor = null;
+    log.innerHTML = "";
+    cliBody.innerHTML = "";
+    var d = document.createElement("div");
+    d.className = "line empty";
+    d.textContent = "No activity yet — send a message and the agent's " +
+      "commands, tool calls and output will stream here.";
+    cliBody.appendChild(d);
+    $("cliForLabel").textContent = "agent activity";
+  }
+
   auth.onAuthStateChanged(function (user) {
     if (!user) {
       authCard.classList.remove("hidden");
       mainCard.classList.add("hidden");
       $("signout").classList.add("hidden");
+      $("clearChat").classList.add("hidden");
       return;
     }
     authCard.classList.add("hidden");
     mainCard.classList.remove("hidden");
     $("signout").classList.remove("hidden");
+    $("clearChat").classList.remove("hidden");
     $("signedInAs").textContent = "Signed in as " + (user.email || "");
     if (inited) return;
     inited = true;
@@ -427,7 +496,16 @@
     var st = document.createElement("div");
     st.className = "statusLine";
     log.appendChild(st);
-    threads[id] = { statusEl: st, replyEl: null, filesEl: null };
+    var rb = document.createElement("div");
+    rb.className = "reasonBox hidden";
+    rb.innerHTML = '<div class="rlabel">Reasoning</div>' +
+      '<div class="reasonBody"></div>';
+    log.appendChild(rb);
+    threads[id] = { statusEl: st, replyEl: null, filesEl: null,
+                    reasonEl: rb,
+                    reasonBody: rb.querySelector(".reasonBody"),
+                    status: msg.status || "pending", replyDone: false,
+                    reasoning: null, refs: [] };
     setStatus(id, msg.status || "pending");
     scrollLog();
     return threads[id];
@@ -435,14 +513,45 @@
 
   function setStatus(id, status) {
     var t = threads[id]; if (!t) return;
+    t.status = status;
     if (status === "pending") t.statusEl.textContent = "Queued…";
     else if (status === "working")
       t.statusEl.innerHTML = 'Agent is working <span class="typing"><i></i><i></i><i></i></span>';
     else t.statusEl.textContent = "";
+    updateReasonVisibility(id);
+  }
+
+  /* ---------- Reasoning (live, D26) ----------
+     The relay streams the model's reasoning to
+     /agentlink/reasoning/<id> while a run is live. The panel
+     shows only for the currently-working message, only while
+     its node says live:true, and never once a reply exists -
+     the verdict replaces it. */
+  function renderReasoning(id, val) {
+    var t = threads[id]; if (!t) return;
+    t.reasoning = val;
+    updateReasonVisibility(id);
+  }
+  function updateReasonVisibility(id) {
+    var t = threads[id]; if (!t || !t.reasonEl) return;
+    var r = t.reasoning;
+    var show = !t.replyDone && t.status === "working" &&
+               !!r && r.live === true && !!r.text;
+    if (!show) { t.reasonEl.classList.add("hidden"); return; }
+    if (t.reasonBody.textContent !== r.text) {
+      t.reasonBody.textContent = r.text;
+      t.reasonBody.scrollTop = t.reasonBody.scrollHeight;
+    }
+    if (t.reasonEl.classList.contains("hidden")) {
+      t.reasonEl.classList.remove("hidden");
+      scrollLog();
+    }
   }
 
   function renderReply(id, reply) {
     var t = threads[id]; if (!t || !reply) return;
+    t.replyDone = true;   // the verdict lands: reasoning panel hides
+    updateReasonVisibility(id);
     setStatus(id, reply.status === "done" ? "done" : reply.status);
     if (t.replyEl) t.replyEl.remove();
     var div = document.createElement("div");
@@ -530,15 +639,23 @@
 
   /* ---------- History ---------- */
   function watchThread(id) {
-    db.ref("agentlink/inbox/" + id + "/status").on("value", function (s) {
-      setStatus(id, s.val() || "pending");
-    });
-    db.ref("agentlink/replies/" + id).on("value", function (s) {
+    var t = threads[id]; if (!t) return;
+    var refs = [];
+    var rs = db.ref("agentlink/inbox/" + id + "/status");
+    rs.on("value", function (s) { setStatus(id, s.val() || "pending"); });
+    refs.push(rs);
+    var rr = db.ref("agentlink/replies/" + id);
+    rr.on("value", function (s) {
       if (s.exists()) renderReply(id, s.val());
     });
-    db.ref("agentlink/files/" + id).on("value", function (s) {
-      renderFiles(id, s.val());
-    });
+    refs.push(rr);
+    var rf = db.ref("agentlink/files/" + id);
+    rf.on("value", function (s) { renderFiles(id, s.val()); });
+    refs.push(rf);
+    var rn = db.ref("agentlink/reasoning/" + id);
+    rn.on("value", function (s) { renderReasoning(id, s.val()); });
+    refs.push(rn);
+    t.refs = refs;
   }
   function loadHistory() {
     db.ref("agentlink/inbox").orderByKey().limitToLast(25).once("value")
