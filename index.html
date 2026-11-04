@@ -109,6 +109,10 @@
   .msg.notice{ background:#fff; border:1px dashed var(--line2);
                border-radius:var(--r-md); box-shadow:none; color:var(--grey2); }
   @keyframes fadein{ from{opacity:0; transform:translateY(3px);} to{opacity:1; transform:none;} }
+  /* History replay on load must land still: the entrance animation
+     is for live arrivals only (owner, 2026-11-04: upper responses
+     were sliding down on every reload). */
+  #log.noanim *{ animation:none !important; }
   .statusLine{ font-size:.8rem; color:var(--grey); min-height:1em; }
   .typing{ display:inline-flex; gap:5px; align-items:center; padding:4px 0 2px; }
   .typing i{ width:7px; height:7px; border-radius:50%; background:#000; display:block;
@@ -288,7 +292,7 @@
   <div class="hidden" id="mainCard">
     <div class="card chatCard">
       <div class="bar"><span id="signedInAs"></span></div>
-      <div id="log" aria-live="polite"></div>
+      <div id="log" class="noanim" aria-live="polite"></div>
 
       <div class="composer">
         <div class="inputBar">
@@ -667,9 +671,13 @@
           cliFor = id;
         });
         if (cliFor) selectCli(cliFor);
+        requestAnimationFrame(function () {
+          log.classList.remove("noanim");
+        });
       })
       .catch(function (err) {
         $("sendError").textContent = "Could not load history: " + err.message;
+        log.classList.remove("noanim");
       });
   }
 
