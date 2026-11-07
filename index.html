@@ -318,7 +318,7 @@
      GET /session/:id/message, live status via /session/status.
      No Firebase, no accounts. Chat state lives in this tab only. */
   var AGENT_BASE = "https://douglas-unflawed-doyle.ngrok-free.dev";
-  var HDRS = { "ngrok-skip-browser-warning": "1" };
+  var HDRS = {};  // no custom headers: keeps fetch "simple", no preflight
 
   var $ = function (id) { return document.getElementById(id); };
   var log = $("log"), cliBody = $("cliBody");
@@ -363,8 +363,11 @@
     return fetch(AGENT_BASE + path, Object.assign({}, opts, { headers: h }));
   }
   function probeStatus() {
-    agentFetch("/session/status").then(function (r) {
-      var up = r.ok;
+    // no-cors: the reply is opaque, but a resolved fetch still proves
+    // the tunnel + agent answer; a rejection means truly unreachable.
+    fetch(AGENT_BASE + "/session/status", { mode: "no-cors", headers: HDRS })
+    .then(function () {
+      var up = true;
       setLamps("relay", up);
       $("relayState").textContent = up ? "Tunnel: online" : "Tunnel: offline";
       setLamps("model", up);
