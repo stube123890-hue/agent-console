@@ -60,7 +60,6 @@
   .card{ border:1px solid var(--line-soft); border-radius:var(--r-lg);
          box-shadow:var(--shadow-card); padding:22px;
          margin-top:20px; background:#fff; animation:fadein .3s ease; }
-  #authCard{ max-width:600px; margin-left:auto; margin-right:auto; }
   label.flabel{ display:block; color:var(--grey2); font-size:.85rem; margin:0 0 6px; }
   input[type=email],input[type=password],textarea{
     width:100%; padding:13px 16px; border:1px solid var(--line2);
@@ -263,42 +262,26 @@
   <header class="top">
     <div>
       <h1>AgentLink</h1>
-      <p class="sub">Your agent workbench, over Firebase.</p>
+      <p class="sub">Your agent, live on Kaggle — tunnel direct, no Firebase.</p>
     </div>
     <div class="presence">
-      <div class="modelTrigger" title="Live model status from the relay">
+      <div class="modelTrigger" title="Live agent status from the tunnel">
         <span class="lamps"><span class="dot red" id="modelRed"></span><span class="dot blue dim" id="modelBlue"></span></span>
         <span id="modelLabel">Model asleep</span>
       </div>
-      <div class="modelTrigger" title="Live relay status">
+      <div class="modelTrigger" title="Tunnel status">
         <span class="lamps"><span class="dot red" id="relayRed"></span><span class="dot blue dim" id="relayBlue"></span></span>
-        <span class="relayState" id="relayState">Relay: unknown</span>
+        <span class="relayState" id="relayState">Tunnel: unknown</span>
       </div>
       <button class="ghost hidden" id="clearChat">Clear chat</button>
       <button class="ghost hidden" id="signout">Sign out</button>
     </div>
   </header>
 
-  <!-- Sign-in -->
-  <div class="card" id="authCard">
-    <div class="field">
-      <label class="flabel" for="email">Email</label>
-      <input id="email" type="email" placeholder="agentpage@muse.chat" autocomplete="username">
-    </div>
-    <div class="field">
-      <label class="flabel" for="password">Password</label>
-      <input id="password" type="password" placeholder="Password" autocomplete="current-password">
-    </div>
-    <button class="primary" id="signin">Sign in</button>
-    <div class="errText" id="authError"></div>
-    <p class="sub">This console talks only to your own agent. Messages, files
-      and replies travel through your Firebase database — nothing is public.</p>
-  </div>
-
   <!-- Console: chat open on the page; only the lower block
        (composer + CLI) sits in a card. -->
-  <div class="hidden" id="mainCard">
-      <div class="bar"><span id="signedInAs"></span></div>
+  <div id="mainCard">
+      <div class="bar"><span id="signedInAs">Connected directly to your agent over its tunnel — no account, no middleman. Chat lives in this browser tab only.</span></div>
       <div id="log" class="noanim" aria-live="polite"></div>
 
     <div class="card lowerCard">
@@ -311,13 +294,7 @@
         <div class="compRow">
           <input type="file" id="fileInput" multiple class="hidden">
           <button class="ghost" id="attachBtn" type="button">Attach files</button>
-          <label class="switchWrap" title="Allow the agent to use the web for this chat">
-            <span class="switch">
-              <input type="checkbox" id="webToggle" checked>
-              <span class="track"></span>
-            </span>
-            Web
-          </label>
+
         </div>
         <div class="errText" id="sendError"></div>
       </div>
@@ -334,34 +311,22 @@
   </div>
 </div>
 
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
 <script>
-  var firebaseConfig = {
-    apiKey: "AIzaSyBzWDmDDqqtv9yWQPmT5JauxCS8KUtMTQk",
-    authDomain: "muse-chat-da775.firebaseapp.com",
-    databaseURL: "https://muse-chat-da775-default-rtdb.firebaseio.com",
-    projectId: "muse-chat-da775",
-    storageBucket: "muse-chat-da775.firebasestorage.app",
-    messagingSenderId: "660615466688",
-    appId: "1:660615466688:web:6627afe03b3be193042725"
-  };
-  firebase.initializeApp(firebaseConfig);
-  var db = firebase.database();
-  var auth = firebase.auth();
-
-  var CHUNK = 921600;              // <= 900 KB base64 chars, multiple of 4
-  var MAX_TOTAL = 10 * 1024 * 1024;
+  /* AgentLink console — tunnel-direct build (2026-11-07 rebuild).
+     Talks straight to the OpenCode agent over its ngrok tunnel:
+     POST /session, POST /session/:id/message (blocking), history via
+     GET /session/:id/message, live status via /session/status.
+     No Firebase, no accounts. Chat state lives in this tab only. */
+  var AGENT_BASE = "https://douglas-unflawed-doyle.ngrok-free.dev";
+  var HDRS = { "ngrok-skip-browser-warning": "1" };
 
   var $ = function (id) { return document.getElementById(id); };
-  var authCard = $("authCard"), mainCard = $("mainCard");
   var log = $("log"), cliBody = $("cliBody");
   var selectedFiles = [];
-  var inited = false;
-  var cliFor = null;               // msgId shown in the CLI panel
-  var cliRef = null;               // active activity listener ref
-  var threads = {};                // msgId -> {statusEl, replyEl, filesEl}
+  var cliFor = null;
+  var sessionId = null;
+  var threads = {};   // localId -> thread record
+  var seq = 0;
 
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
@@ -377,63 +342,46 @@
     if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
     return (n / 1048576).toFixed(2) + " MB";
   }
+  function scrollLog() { log.scrollTop = log.scrollHeight; }
 
-  /* ---------- Model status trigger (live from /agentlink/presence) -- */
-  var lastModelUp = null;
+  /* ---------- Status lamps ----------
+     Model lamp: blue bright when the agent session answers,
+     red bright when the session is asleep/down.
+     Tunnel lamp: blue bright when the public URL answers. */
   function setLamps(which, on) {
-    /* Two-lamp indicator: on = blue bright + red dim;
-       off = red stays bright + blue dim. */
     $(which + "Red").classList.toggle("dim", on);
     $(which + "Blue").classList.toggle("dim", !on);
   }
-  function renderPresence(p) {
-    var now = Date.now();
-    var fresh = p && p.relay_ts && (now - p.relay_ts < 120000);
-    $("relayState").textContent = fresh
-      ? "Relay: online · " + fmtTime(p.relay_ts) : "Relay: offline";
-    setLamps("relay", !!fresh);
-    var up = !!(fresh && p.model === "up");
-    setLamps("model", up);
-    $("modelLabel").textContent = up ? "Model active" : "Model asleep";
-    if (lastModelUp !== null && lastModelUp !== up) {
-      var lit = $(up ? "modelBlue" : "modelRed");
-      lit.classList.remove("pulse");
-      void lit.offsetWidth;               // restart the animation
-      lit.classList.add("pulse");
-    }
-    lastModelUp = up;
+  var lastModelUp = null;
+  function pulse(which, on) {
+    var lit = $(which + (on ? "Blue" : "Red"));
+    lit.classList.remove("pulse"); void lit.offsetWidth; lit.classList.add("pulse");
   }
-
-  /* ---------- Auth ---------- */
-  function friendlyAuthError(err) {
-    var code = (err && err.code) || "";
-    if (code === "auth/invalid-credential" || code === "auth/wrong-password" ||
-        code === "auth/user-not-found") return "Wrong email or password. Try again.";
-    if (code === "auth/invalid-email") return "That email address doesn't look right.";
-    if (code === "auth/too-many-requests") return "Too many attempts — wait a bit and try again.";
-    if (code === "auth/network-request-failed") return "Network error — check your connection.";
-    return "Sign-in failed: " + (err && err.message ? err.message : "unknown error");
+  function agentFetch(path, opts) {
+    opts = opts || {};
+    var h = Object.assign({}, HDRS, opts.headers || {});
+    return fetch(AGENT_BASE + path, Object.assign({}, opts, { headers: h }));
   }
-  $("signin").addEventListener("click", function () {
-    var email = $("email").value.trim(), pw = $("password").value;
-    if (!email || !pw) { $("authError").textContent = "Enter your email and password."; return; }
-    $("authError").textContent = "";
-    $("signin").disabled = true;
-    auth.signInWithEmailAndPassword(email, pw).catch(function (err) {
-      $("authError").textContent = friendlyAuthError(err);
-    }).finally(function () { $("signin").disabled = false; });
-  });
-  $("password").addEventListener("keydown", function (e) { if (e.key === "Enter") $("signin").click(); });
-  $("signout").addEventListener("click", function () { auth.signOut(); });
+  function probeStatus() {
+    agentFetch("/session/status").then(function (r) {
+      var up = r.ok;
+      setLamps("relay", up);
+      $("relayState").textContent = up ? "Tunnel: online" : "Tunnel: offline";
+      setLamps("model", up);
+      $("modelLabel").textContent = up ? "Model active" : "Model asleep";
+      if (lastModelUp !== null && lastModelUp !== up) pulse("model", up);
+      lastModelUp = up;
+    }).catch(function () {
+      setLamps("relay", false); setLamps("model", false);
+      $("relayState").textContent = "Tunnel: offline";
+      $("modelLabel").textContent = "Model asleep";
+      lastModelUp = false;
+    });
+  }
+  setInterval(probeStatus, 20000);
+  probeStatus();
 
-  /* ---------- Clear chat (D26) ----------
-     Deletes the chat-scoped roots under /agentlink — inbox,
-     replies, files, activity, reasoning — and nothing else:
-     /agentlink/presence and /agentlink/llm are infrastructure,
-     and the Muse Chat /messages room is a different product.
-     Two-step inline confirm: the first tap arms the button for
-     a few seconds; the second tap executes. */
-  var CHAT_ROOTS = ["inbox", "replies", "files", "activity", "reasoning"];
+  /* ---------- Clear chat (tab-local; two-tap arm) ---------- */
   var clearArmTimer = null;
   function disarmClear() {
     var btn = $("clearChat");
@@ -450,74 +398,25 @@
       return;
     }
     disarmClear();
-    btn.disabled = true;
-    var jobs = CHAT_ROOTS.map(function (r) {
-      return db.ref("agentlink/" + r).remove();
-    });
-    Promise.all(jobs).then(function () {
-      resetChatUi();
-    }).catch(function (err) {
-      $("sendError").textContent = "Clear chat failed: " + err.message;
-    }).finally(function () { btn.disabled = false; });
-  });
-  function resetChatUi() {
-    Object.keys(threads).forEach(function (id) {
-      (threads[id].refs || []).forEach(function (r) { r.off(); });
-    });
-    threads = {};
-    if (cliRef) { cliRef.off(); cliRef = null; }
-    cliFor = null;
+    threads = {}; sessionId = null; cliFor = null;
     log.innerHTML = "";
-    cliBody.innerHTML = "";
-    var d = document.createElement("div");
-    d.className = "line empty";
-    d.textContent = "No activity yet — send a message and the agent's " +
-      "commands, tool calls and output will stream here.";
-    cliBody.appendChild(d);
+    cliBody.innerHTML = '<div class="line empty">No activity yet \u2014 send a message and the agent\u2019s tool calls will stream here.</div>';
     $("cliForLabel").textContent = "agent activity";
-  }
-
-  auth.onAuthStateChanged(function (user) {
-    if (!user) {
-      authCard.classList.remove("hidden");
-      mainCard.classList.add("hidden");
-      $("signout").classList.add("hidden");
-      $("clearChat").classList.add("hidden");
-      return;
-    }
-    authCard.classList.add("hidden");
-    mainCard.classList.remove("hidden");
-    $("signout").classList.remove("hidden");
-    $("clearChat").classList.remove("hidden");
-    $("signedInAs").textContent = "Signed in as " + (user.email || "");
-    if (inited) return;
-    inited = true;
-    db.ref("agentlink/presence").on("value", function (s) { renderPresence(s.val()); });
-    loadHistory();
-    if (window.innerWidth <= 640) toggleCli(false);   // collapsed by default on mobile
   });
+  $("signout").classList.add("hidden");   // no accounts in this build
 
-  /* ---------- Chat rendering ---------- */
-  function scrollLog() { log.scrollTop = log.scrollHeight; }
-
-  function addUserBubble(id, msg) {
-    /* One container per thread (D30): the reply and files used to
-       be appended to the END of the whole log, so on reload they
-       detached from their question and stacked at the bottom -
-       the "messages sliding down" the owner reported. Everything
-       a thread owns now lives inside its own .thread box, in
-       order, and can never migrate. */
+  /* ---------- Threads / rendering ---------- */
+  function addUserBubble(id, text, ts, attNames) {
     var wrap = document.createElement("div");
     wrap.className = "thread";
     var div = document.createElement("div");
     div.className = "msg me";
     div.title = "Show this message in the CLI panel";
-    var att = (msg.attachments || []).map(function (a) {
-      return '<div class="meta">▸ ' + esc(a.name) + " (" + fmtSize(a.size || 0) + ")</div>";
+    var att = (attNames || []).map(function (n) {
+      return '<div class="meta">\u25B8 ' + esc(n) + "</div>";
     }).join("");
-    div.innerHTML = "<div>" + esc(msg.text) + "</div>" + att +
-      '<div class="meta">' + esc(fmtTime(msg.ts)) +
-      (msg.web === false ? " · web off" : " · web on") + "</div>";
+    div.innerHTML = "<div>" + esc(text) + "</div>" + att +
+      '<div class="meta">' + esc(fmtTime(ts)) + "</div>";
     div.addEventListener("click", function () { selectCli(id); });
     wrap.appendChild(div);
     var st = document.createElement("div");
@@ -525,183 +424,140 @@
     wrap.appendChild(st);
     var rb = document.createElement("div");
     rb.className = "reasonBox hidden";
-    rb.innerHTML = '<div class="rlabel">Reasoning</div>' +
-      '<div class="reasonBody"></div>';
+    rb.innerHTML = '<div class="rlabel">Reasoning</div><div class="reasonBody"></div>';
     wrap.appendChild(rb);
     log.appendChild(wrap);
-    threads[id] = { wrap: wrap, statusEl: st, replyEl: null, filesEl: null,
-                    reasonEl: rb,
-                    reasonBody: rb.querySelector(".reasonBody"),
-                    status: msg.status || "pending", replyDone: false,
-                    reasoning: null, refs: [] };
-    setStatus(id, msg.status || "pending");
+    threads[id] = { wrap: wrap, statusEl: st, replyEl: null,
+                    reasonEl: rb, reasonBody: rb.querySelector(".reasonBody"),
+                    status: "working", replyDone: false, cliLines: [] };
+    setStatus(id, "working");
     scrollLog();
     return threads[id];
   }
-
   function setStatus(id, status) {
     var t = threads[id]; if (!t) return;
     t.status = status;
-    if (status === "pending") t.statusEl.textContent = "Queued…";
-    else if (status === "working")
+    if (status === "working")
       t.statusEl.innerHTML = 'Agent is working <span class="typing"><i></i><i></i><i></i></span>';
     else t.statusEl.textContent = "";
     updateReasonVisibility(id);
   }
-
-  /* ---------- Reasoning (live, D26) ----------
-     The relay streams the model's reasoning to
-     /agentlink/reasoning/<id> while a run is live. The panel
-     shows only for the currently-working message, only while
-     its node says live:true, and never once a reply exists -
-     the verdict replaces it. */
-  function renderReasoning(id, val) {
-    var t = threads[id]; if (!t) return;
-    t.reasoning = val;
-    updateReasonVisibility(id);
-  }
   function updateReasonVisibility(id) {
-    var t = threads[id]; if (!t || !t.reasonEl) return;
-    var r = t.reasoning;
-    var show = !t.replyDone && t.status === "working" &&
-               !!r && r.live === true && !!r.text;
+    var t = threads[id]; if (!t) return;
+    var show = !t.replyDone && t.status === "working" && !!t.reasonText;
     if (!show) { t.reasonEl.classList.add("hidden"); return; }
-    if (t.reasonBody.textContent !== r.text) {
-      t.reasonBody.textContent = r.text;
+    if (t.reasonBody.textContent !== t.reasonText) {
+      t.reasonBody.textContent = t.reasonText;
       t.reasonBody.scrollTop = t.reasonBody.scrollHeight;
     }
     if (t.reasonEl.classList.contains("hidden")) {
-      t.reasonEl.classList.remove("hidden");
-      scrollLog();
+      t.reasonEl.classList.remove("hidden"); scrollLog();
     }
   }
-
-  function renderReply(id, reply) {
-    var t = threads[id]; if (!t || !reply) return;
-    t.replyDone = true;   // the verdict lands: reasoning panel hides
-    updateReasonVisibility(id);
-    setStatus(id, reply.status === "done" ? "done" : reply.status);
+  function renderReply(id, text, isError) {
+    var t = threads[id]; if (!t) return;
+    t.replyDone = true;
+    setStatus(id, "done");
     if (t.replyEl) t.replyEl.remove();
     var div = document.createElement("div");
-    if (reply.status === "done") {
-      div.className = "msg";
-      div.innerHTML = "<div>" + esc(reply.text) + "</div>" +
-        '<div class="meta">agent · ' + esc(fmtTime(reply.ts)) + "</div>";
-    } else {
+    if (isError) {
       div.className = "msg notice";
-      div.textContent = reply.text ||
-        (reply.status === "model-asleep" ? "The model is asleep." : "Something went wrong.");
+      div.textContent = text;
+    } else {
+      div.className = "msg";
+      div.innerHTML = "<div>" + esc(text) + "</div>" +
+        '<div class="meta">agent \u00B7 ' + esc(fmtTime(Date.now())) + "</div>";
     }
     t.wrap.appendChild(div);
     t.replyEl = div;
     scrollLog();
   }
 
-  function renderFiles(id, files) {
-    var t = threads[id]; if (!t) return;
-    if (t.filesEl) { t.filesEl.remove(); t.filesEl = null; }
-    if (!files) return;
-    var keys = Object.keys(files).sort();
-    if (!keys.length) return;
-    var box = document.createElement("div");
-    box.className = "fileList";
-    keys.forEach(function (k) {
-      var f = files[k];
-      var row = document.createElement("div");
-      row.className = "fileRow";
-      row.innerHTML = '<span class="fname">' + esc(f.name) + "</span>" +
-        '<span class="fsize">' + fmtSize(f.size || 0) + "</span>";
-      var btn = document.createElement("button");
-      btn.className = "ghost"; btn.textContent = "Download"; btn.type = "button";
-      btn.addEventListener("click", function () { downloadFile(f); });
-      row.appendChild(btn);
-      box.appendChild(row);
-    });
-    t.wrap.appendChild(box);
-    t.filesEl = box;
-    scrollLog();
-  }
-
-  function downloadFile(f) {
-    var b64 = (f.chunks || []).join("");
-    var bin = atob(b64);
-    var bytes = new Uint8Array(bin.length);
-    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    var url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
-    var a = document.createElement("a");
-    a.href = url; a.download = f.name || "file";
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
-  }
-
-  /* ---------- CLI showcase ---------- */
+  /* ---------- CLI panel (this thread's tool activity) ---------- */
   function toggleCli(show) {
-    var body = cliBody;
-    var hidden = body.classList.toggle("hidden", show === false);
+    var hidden = cliBody.classList.toggle("hidden", show === false);
     $("cliToggle").textContent = hidden ? "Show" : "Hide";
   }
   $("cliToggle").addEventListener("click", function () {
     toggleCli(cliBody.classList.contains("hidden"));
   });
-
-  function cliLine(entry) {
+  function cliLine(kind, text, ts) {
     var div = document.createElement("div");
     div.className = "line";
-    div.innerHTML = '<span class="t">[' + esc(fmtTime(entry.ts)) + "]</span> " +
-      '<span class="k">' + esc(entry.kind || "log") + "</span> " + esc(entry.text || "");
+    div.innerHTML = '<span class="t">[' + esc(fmtTime(ts || Date.now())) + "]</span> " +
+      '<span class="k">' + esc(kind || "log") + "</span> " + esc(text || "");
     return div;
   }
   function selectCli(id) {
     cliFor = id;
-    $("cliForLabel").textContent = "activity · message " + id.slice(0, 6) + "…";
+    $("cliForLabel").textContent = "activity \u00B7 this message";
     cliBody.innerHTML = "";
-    if (cliRef) cliRef.off();
-    cliRef = db.ref("agentlink/activity/" + id);
-    cliRef.on("child_added", function (snap) {
-      var e = snap.val() || {};
+    var t = threads[id];
+    var lines = (t && t.cliLines) || [];
+    if (!lines.length) {
+      cliBody.innerHTML = '<div class="line empty">No tool activity for this message yet.</div>';
+      return;
+    }
+    lines.forEach(function (l) { cliBody.appendChild(cliLine(l.kind, l.text, l.ts)); });
+    cliBody.scrollTop = cliBody.scrollHeight;
+  }
+  function pushCli(id, kind, text) {
+    var t = threads[id]; if (!t) return;
+    var line = { kind: kind, text: text, ts: Date.now() };
+    t.cliLines.push(line);
+    if (cliFor === id) {
       var empty = cliBody.querySelector(".empty"); if (empty) empty.remove();
-      cliBody.appendChild(cliLine(e));
+      cliBody.appendChild(cliLine(kind, text, line.ts));
       cliBody.scrollTop = cliBody.scrollHeight;
+    }
+  }
+
+  /* ---------- Agent API ---------- */
+  function ensureSession() {
+    if (sessionId) return Promise.resolve(sessionId);
+    return agentFetch("/session", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: "{}" })
+      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(function (s) { sessionId = s.id; return sessionId; });
+  }
+  function fileToDataUrl(file) {
+    return new Promise(function (resolve, reject) {
+      var r = new FileReader();
+      r.onload = function () { resolve(String(r.result)); };
+      r.onerror = reject;
+      r.readAsDataURL(file);
     });
   }
 
-  /* ---------- History ---------- */
-  function watchThread(id) {
-    var t = threads[id]; if (!t) return;
-    var refs = [];
-    var rs = db.ref("agentlink/inbox/" + id + "/status");
-    rs.on("value", function (s) { setStatus(id, s.val() || "pending"); });
-    refs.push(rs);
-    var rr = db.ref("agentlink/replies/" + id);
-    rr.on("value", function (s) {
-      if (s.exists()) renderReply(id, s.val());
-    });
-    refs.push(rr);
-    var rf = db.ref("agentlink/files/" + id);
-    rf.on("value", function (s) { renderFiles(id, s.val()); });
-    refs.push(rf);
-    var rn = db.ref("agentlink/reasoning/" + id);
-    rn.on("value", function (s) { renderReasoning(id, s.val()); });
-    refs.push(rn);
-    t.refs = refs;
-  }
-  function loadHistory() {
-    db.ref("agentlink/inbox").orderByKey().limitToLast(25).once("value")
-      .then(function (snap) {
-        var data = snap.val() || {};
-        Object.keys(data).sort().forEach(function (id) {
-          addUserBubble(id, data[id]);
-          watchThread(id);
-          cliFor = id;
-        });
-        if (cliFor) selectCli(cliFor);
-        requestAnimationFrame(function () {
-          log.classList.remove("noanim");
-        });
-      })
-      .catch(function (err) {
-        $("sendError").textContent = "Could not load history: " + err.message;
-        log.classList.remove("noanim");
+  /* Poll the session history while a run is live, so reasoning and
+     tool calls stream into the panels before the verdict lands. */
+  function pollThread(id, sid, stopFlag) {
+    agentFetch("/session/" + sid + "/message").then(function (r) { return r.json(); })
+      .then(function (msgs) {
+        if (stopFlag.done) return;
+        var last = null;
+        for (var i = msgs.length - 1; i >= 0; i--) {
+          if (msgs[i].info && msgs[i].info.role === "assistant") { last = msgs[i]; break; }
+        }
+        if (last) {
+          var t = threads[id];
+          (last.parts || []).forEach(function (p) {
+            if (p.type === "reasoning" && p.text) {
+              t.reasonText = p.text; updateReasonVisibility(id);
+            } else if (p.type === "tool") {
+              var key = p.callID || (p.tool + JSON.stringify(p.state && p.state.input || ""));
+              t.seenTools = t.seenTools || {};
+              if (!t.seenTools[key]) {
+                t.seenTools[key] = 1;
+                var inp = (p.state && p.state.input) || {};
+                var label = inp.filePath || inp.command || inp.pattern || "";
+                pushCli(id, p.tool, String(label).slice(0, 160));
+              }
+            }
+          });
+        }
+      }).catch(function () {}).finally(function () {
+        if (!stopFlag.done) stopFlag.timer = setTimeout(function () { pollThread(id, sid, stopFlag); }, 4000);
       });
   }
 
@@ -711,12 +567,10 @@
     selectedFiles.forEach(function (f, i) {
       var chip = document.createElement("span");
       chip.className = "chip";
-      chip.innerHTML = esc(f.name) + " · " + fmtSize(f.size);
+      chip.innerHTML = esc(f.name) + " \u00B7 " + fmtSize(f.size);
       var x = document.createElement("button");
-      x.textContent = "×"; x.type = "button"; x.title = "Remove";
-      x.addEventListener("click", function () {
-        selectedFiles.splice(i, 1); renderChips();
-      });
+      x.textContent = "\u00D7"; x.type = "button"; x.title = "Remove";
+      x.addEventListener("click", function () { selectedFiles.splice(i, 1); renderChips(); });
       chip.appendChild(x);
       box.appendChild(chip);
     });
@@ -728,26 +582,6 @@
     renderChips();
   });
 
-  function readAsB64(file) {
-    return new Promise(function (resolve, reject) {
-      var r = new FileReader();
-      r.onload = function () { resolve(String(r.result).split(",")[1] || ""); };
-      r.onerror = reject;
-      r.readAsDataURL(file);
-    });
-  }
-  function chunkStr(s) {
-    var out = [];
-    for (var i = 0; i < s.length; i += CHUNK) out.push(s.slice(i, i + CHUNK));
-    return out.length ? out : [""];
-  }
-
-  var webToggleInit = localStorage.getItem("agentlink-web");
-  if (webToggleInit !== null) $("webToggle").checked = webToggleInit === "1";
-  $("webToggle").addEventListener("change", function () {
-    localStorage.setItem("agentlink-web", $("webToggle").checked ? "1" : "0");
-  });
-
   $("sendBtn").addEventListener("click", function () {
     var text = $("text").value.trim();
     $("sendError").textContent = "";
@@ -755,42 +589,64 @@
       $("sendError").textContent = "Write a message or attach a file first.";
       return;
     }
-    var total = selectedFiles.reduce(function (a, f) { return a + f.size; }, 0);
-    if (total > MAX_TOTAL) {
-      $("sendError").textContent =
-        "Attachments total " + fmtSize(total) + " — the limit is 10 MB per message.";
-      return;
-    }
-    if (!auth.currentUser) {
-      $("sendError").textContent = "You're signed out — sign in again to send.";
-      return;
-    }
     $("sendBtn").disabled = true;
-    var jobs = selectedFiles.map(function (f) {
-      return readAsB64(f).then(function (b64) {
-        return { name: f.name, size: f.size, chunks: chunkStr(b64) };
+    var files = selectedFiles.slice();
+    var jobs = files.map(function (f) {
+      return fileToDataUrl(f).then(function (url) {
+        return { type: "file", mime: f.type || "application/octet-stream",
+                 filename: f.name, url: url };
       });
     });
-    Promise.all(jobs).then(function (attachments) {
-      var msg = {
-        text: text, ts: Date.now(), web: $("webToggle").checked,
-        status: "pending"
-      };
-      if (attachments.length) msg.attachments = attachments;
-      return db.ref("agentlink/inbox").push(msg);
-    }).then(function (ref) {
-      var id = ref.key;
+    Promise.all(jobs).then(function (parts) {
+      if (text) parts.unshift({ type: "text", text: text });
+      var id = "m" + (++seq) + "-" + Date.now();
+      addUserBubble(id, text, Date.now(), files.map(function (f) { return f.name; }));
+      selectCli(id);
       selectedFiles = []; renderChips();
       $("text").value = "";
-      addUserBubble(id, { text: text, ts: Date.now(),
-                          web: $("webToggle").checked, status: "pending",
-                          attachments: [] });
-      watchThread(id);
-      selectCli(id);
+      return ensureSession().then(function (sid) {
+        var stopFlag = { done: false };
+        pollThread(id, sid, stopFlag);
+        return agentFetch("/session/" + sid + "/message", { method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ parts: parts }) })
+          .then(function (r) {
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            return r.json();
+          })
+          .then(function (resp) {
+            stopFlag.done = true;
+            if (stopFlag.timer) clearTimeout(stopFlag.timer);
+            var out = [];
+            (resp.parts || []).forEach(function (p) { if (p.type === "text") out.push(p.text); });
+            var t = threads[id];
+            // stream any final tool lines the poller missed
+            (resp.parts || []).forEach(function (p) {
+              if (p.type === "tool") {
+                t.seenTools = t.seenTools || {};
+                var key = p.callID || p.tool;
+                if (!t.seenTools[key]) {
+                  t.seenTools[key] = 1;
+                  var inp = (p.state && p.state.input) || {};
+                  pushCli(id, p.tool, String(inp.filePath || inp.command || "").slice(0, 160));
+                }
+              }
+            });
+            renderReply(id, out.join("\n") || "(no text reply)", false);
+          })
+          .catch(function (err) {
+            stopFlag.done = true;
+            if (stopFlag.timer) clearTimeout(stopFlag.timer);
+            renderReply(id, "The agent could not be reached \u2014 it is asleep or the tunnel is down. Wake it from the Kaggle notebook, then send again. (" + err.message + ")", true);
+          });
+      });
     }).catch(function (err) {
       $("sendError").textContent = "Send failed: " + err.message;
     }).finally(function () { $("sendBtn").disabled = false; });
   });
+
+  requestAnimationFrame(function () { log.classList.remove("noanim"); });
+  if (window.innerWidth <= 640) toggleCli(false);
 </script>
 </body>
 </html>

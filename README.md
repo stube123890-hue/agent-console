@@ -1,11 +1,18 @@
 # AgentLink console
 
-A minimal black & white web console for the owner's self-hosted agent
-workbench. Static page (GitHub Pages) backed by Firebase Realtime
-Database: messages, file uploads, live CLI activity and result files
-travel through the `/agentlink` subtree, where a relay daemon on the
-workbench VM picks them up and runs the agent.
+A minimal black & white web console for the owner's self-hosted agent.
+Static page (GitHub Pages) that talks **directly to the OpenCode agent
+over its ngrok tunnel** — no Firebase, no accounts, no relay.
 
-Sign-in uses a dedicated Firebase Auth account for this page. The
-Firebase web config embedded in `index.html` is a public client
-identifier (same project as the Muse Chat room), not a secret.
+- Agent endpoint: `https://douglas-unflawed-doyle.ngrok-free.dev`
+  (ngrok static domain → Kaggle notebook → OpenCode serve → llama.cpp
+  running Magistral-Small-2506-abliterated).
+- Chat flow: `POST /session` once per tab, then blocking
+  `POST /session/:id/message`; reasoning and tool activity stream in
+  via history polling while a run is live; the header lamps track
+  `/session/status`.
+- The agent sleeps with the Kaggle session — if the lamps are red,
+  re-run the `agent-rebuild` notebook to wake it.
+- Chat lives in the browser tab only; Clear chat wipes the tab view.
+- The previous Firebase build is preserved at
+  `console-index-backup-firebase.html` in the rebuild folder.
